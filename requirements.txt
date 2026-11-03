@@ -1,0 +1,5 @@
+qiskit==2.6.1
+qiskit-nature==0.8.0
+qiskit-algorithms==0.4.0
+pyscf==2.14.0
+rdkit==2026.9.1
