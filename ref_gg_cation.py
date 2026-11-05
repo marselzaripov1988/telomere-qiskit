@@ -174,37 +174,53 @@ def hole_cas(sym, xyz, frag, env, ions):
 
     # нейтраль CASSCF(8,6) — референс заселённостей
     mc0 = mcscf.CASSCF(mf0, 6, 8)
+    mc0.max_cycle_macro = 150
     mc0.kernel(mc0.sort_mo([i + 1 for i in act]))
+    assert mc0.converged, "CASSCF нейтрали не сошёлся"
+    e_neu_pt2 = mc0.e_tot + float(mrpt.NEVPT(mc0).kernel())
     S = m0.intor("int1e_ovlp")
     n_neu = frag_pop(m0, mc0.make_rdm1(), S, frag)
 
-    # катион: SA2-CASSCF(7,6), старт с орбиталей нейтрали
+    # катион: SA4-CASSCF(7,6) с равными весами, старт с орбиталей нейтрали.
+    # SA2 оказался смещён: оба корня — дырка на одном G (D0/D1 одного основания),
+    # CT-состояние на втором G выталкивалось вверх орбитальной поляризацией.
+    nr = 4
     mf1 = with_env(scf.ROHF(m1).density_fit(), env, ions)
     mf1.kernel()
-    sa = mcscf.CASSCF(mf1, 6, (4, 3)).state_average_([0.5, 0.5])
+    sa = mcscf.CASSCF(mf1, 6, (4, 3)).state_average_([1 / nr] * nr)
     sa.fix_spin_(ss=0.75)
     sa.max_cycle_macro = 150
     sa.kernel(mc0.mo_coeff)
     assert sa.converged, "SA-CASSCF не сошёлся"
 
     ci = mcscf.CASCI(mf1, 6, (4, 3))
-    ci.fcisolver.nroots = 2
+    ci.fcisolver.nroots = nr
     ci.fix_spin_(ss=0.75)
     ci.kernel(sa.mo_coeff)
-    e_cas = list(map(float, ci.e_tot))
-    e_pt2 = [e_cas[r] + float(mrpt.NEVPT(ci, root=r).kernel()) for r in (0, 1)]
-
+    e_all = list(map(float, ci.e_tot))
+    n_all = [frag_pop(m1, ci.make_rdm1(ci=ci.ci[r]), S, frag) for r in range(nr)]
+    holes = [(n_neu - n).round(4).tolist() for n in n_all]
+    # пара для FCD: нижнее состояние с дыркой на 5′-G и нижнее — на 3′-G
+    on = [[r for r in range(nr) if holes[r][k] > 0.5] for k in (0, 1)]
+    out = {"active": info, "nroots": nr, "E_CASSCF_all": e_all, "hole_states_CASSCF": holes,
+           "E_neutral_CASSCF": float(mc0.e_tot)}
+    if not (on[0] and on[1]):
+        out["note"] = "среди корней нет пары с дыркой на разных G"
+        return out
+    pair = sorted((on[0][0], on[1][0]))
+    out["pair"] = pair
+    e_cas = [e_all[r] for r in pair]
+    e_pt2 = [e_cas[i] + float(mrpt.NEVPT(ci, root=r).kernel()) for i, r in enumerate(pair)]
     C = ci.mo_coeff[:, ci.ncore:ci.ncore + ci.ncas]
-    n_state = [frag_pop(m1, ci.make_rdm1(ci=ci.ci[r]), S, frag) for r in (0, 1)]
-    t_act = ci.fcisolver.trans_rdm1(ci.ci[0], ci.ci[1], 6, (4, 3))
+    t_act = ci.fcisolver.trans_rdm1(ci.ci[pair[0]], ci.ci[pair[1]], 6, (4, 3))
     n_tr = frag_pop(m1, C @ t_act @ C.T, S, frag)
-
-    holes = [(n_neu - n).round(4).tolist() for n in n_state]
-    # FCD: Δn_ab = n_G1(ab) − n_G2(ab) в базисе двух адиабатических состояний
-    d11, d22 = n_state[0][0] - n_state[0][1], n_state[1][0] - n_state[1][1]
+    # FCD (Voityuk): Δn_ab = n_G1(ab) − n_G2(ab) в базисе двух адиабатических состояний
+    d11 = n_all[pair[0]][0] - n_all[pair[0]][1]
+    d22 = n_all[pair[1]][0] - n_all[pair[1]][1]
     d12 = n_tr[0] - n_tr[1]
     den = np.sqrt((d11 - d22) ** 2 + 4 * d12 ** 2)
-    out = {"active": info, "E_CASSCF": e_cas, "E_NEVPT2": e_pt2, "hole_states_CASSCF": holes}
+    out.update({"E_CASSCF": e_cas, "E_NEVPT2": e_pt2,
+                "IP_NEVPT2_eV": round((e_pt2[0] - e_neu_pt2) * HA2EV, 4)})
     for tag, e in (("CASSCF", e_cas), ("NEVPT2", e_pt2)):
         gap = (e[1] - e[0]) * HA2EV
         out[f"gap_{tag}_eV"] = round(gap, 4)
@@ -253,11 +269,11 @@ def main():
         for meth in ("HF", "B3LYP", "CAM-B3LYP"):
             step(f"{meth}/{env}", lambda: hole_scf(sym, xyz, frag, meth, env, ions))
     for env in ("gas", "K"):
-        step(f"SA-CASSCF/{env}", lambda: hole_cas(sym, xyz, frag, env, ions))
+        step(f"SA4-CASSCF/{env}", lambda: hole_cas(sym, xyz, frag, env, ions))
 
     print("\nДырка на (5′-G, 3′-G); основное состояние GG⁺:")
     for k, v in R[key0].items():
-        h = v.get("hole") or v["hole_states_CASSCF"][0]
+        h = v.get("hole") or v["hole_states_CASSCF"][int(np.argmin(v["E_CASSCF_all"]))]
         extra = ""
         if "V_NEVPT2_meV" in v:
             extra = (f"   NEVPT2: V = {v['V_NEVPT2_meV']} мэВ, Δ = {v['Delta_NEVPT2_meV']} мэВ, "
