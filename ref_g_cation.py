@@ -142,13 +142,16 @@ def cas_nevpt2(sym, xyz_neutral_ref, xyz, charge):
     mf0 = scf_run(m0)
     ncas, nelecas, mo = avas.avas(mf0, ["C 2pz", "N 2pz", "O 2pz"], canonicalize=False)
     if charge == 0:
-        mc = mcscf.CASSCF(mf0, ncas, nelecas)
+        mc = mcscf.CASSCF(mf0.density_fit(), ncas, nelecas)
     else:
         mfc = scf.ROHF(mole(sym, xyz, "cc-pvdz", charge)).run(conv_tol=1e-10)
         ne = nelecas - 1
-        mc = mcscf.CASSCF(mfc, ncas, ((ne + 1) // 2, ne // 2))
-    mc.max_cycle_macro = 100
-    mc.conv_tol = 1e-9
+        mc = mcscf.CASSCF(mfc.density_fit(), ncas, ((ne + 1) // 2, ne // 2))
+    # неплоская (пирамидальная NH2) нейтраль: медленное σ/π-смешивание орбиталей
+    mc.max_cycle_macro = 300
+    mc.conv_tol = 1e-7
+    mc.conv_tol_grad = 1e-3
+    mc.fcisolver.conv_tol = 1e-10
     mc.kernel(mo)
     assert mc.converged, "CASSCF не сошёлся"
     e_pt2 = mrpt.NEVPT(mc).kernel()
