@@ -16,7 +16,8 @@
 Методы (cc-pVDZ):
   UHF, UB3LYP, UCAM-B3LYP — дырка на каждом G по Малликену:
       h_f = n_f(GG) − n_f(GG⁺)   (сумма = 1)
-  SA4-CASSCF(7,6) — π HOMO/HOMO-1 каждого G + 2 π*; 4 нижних дублета GG⁺.
+  SA4-CASSCF(7,6) — 4 верхние занятые + 2 виртуальные π-МО димера (по π-весу, без контроля
+      фрагмента: сбалансировано только в KP, см. README); 4 нижних дублета GG⁺.
   SA-DSRG-MRPT2 (pyscf-forge, s=0.5) с релаксацией референса: динамическая корреляция
       и перемешивание квазивырожденных состояний в CAS (аналог QD/XMS-NEVPT2).
   FCD-модель (Voityuk) для пары нижних состояний с дыркой на разных G:
@@ -183,8 +184,12 @@ def fcd(e, dq):
     d11, d22, d12 = dq
     den = np.sqrt((d11 - d22) ** 2 + 4 * d12 ** 2)
     gap = (e[1] - e[0]) * HA2EV
+    if abs(den - 2) > 0.1:  # двухуровневая модель: для чистых CT-состояний den ≈ 2
+        print(f"  ! FCD: знаменатель {den:.3f} далёк от 2 — двухуровневая модель сомнительна",
+              flush=True)
     return {"gap_eV": round(gap, 4), "V_meV": round(1000 * abs(gap * d12 / den), 1),
-            "Delta_meV": round(1000 * abs(gap * (d11 - d22) / den), 1)}
+            "Delta_meV": round(1000 * abs(gap * (d11 - d22) / den), 1),
+            "fcd_den": round(float(den), 3)}
 
 
 def analyze_states(mc, vecs, energies, n_neu, S, m1, frag, nelec):
@@ -202,6 +207,7 @@ def analyze_states(mc, vecs, energies, n_neu, S, m1, frag, nelec):
     p = sorted((on[0][0], on[1][0]))
     c_act = mc.mo_coeff[:, mc.ncore:mc.ncore + mc.ncas]
     t = fci.direct_spin1.trans_rdm1(vecs[p[0]], vecs[p[1]], mc.ncas, nelec)
+    t = (t + t.T) / 2  # Малликен для несимметричной переходной плотности
     n_tr = frag_pop(m1, c_act @ t @ c_act.T, S, frag)
     dq = (n_all[p[0]][0] - n_all[p[0]][1], n_all[p[1]][0] - n_all[p[1]][1], n_tr[0] - n_tr[1])
     out.update({"pair": p, **fcd([energies[r] for r in p], dq)})
